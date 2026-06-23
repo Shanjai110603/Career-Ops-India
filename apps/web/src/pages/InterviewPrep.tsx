@@ -8,67 +8,26 @@ export default function InterviewPrep() {
 
   useEffect(() => { fetch('/api/interview-preps').then(r => r.json()).then(d => setPreps(Array.isArray(d) ? d : [])).catch(() => {}); }, []);
 
-  const generateQuestions = () => {
-    const title = newPrep.jobTitle.toLowerCase();
-    setGenerated({
-      hrQuestions: [
-        'Tell me about yourself and your career journey.',
-        'Why are you interested in this role at ' + newPrep.company + '?',
-        'Where do you see yourself in 5 years?',
-        'What are your salary expectations?',
-        'What is your notice period? Can it be negotiated?',
-        'Why are you leaving your current organization?',
-        'Tell me about a time you handled a difficult team situation.',
-        'How do you handle work pressure and tight deadlines?',
-      ],
-      roleQuestions: title.includes('software') || title.includes('developer') || title.includes('engineer') ? [
-        'Explain the difference between REST and GraphQL APIs.',
-        'How would you design a scalable microservices architecture?',
-        'Describe your experience with CI/CD pipelines.',
-        'Walk me through your approach to debugging a production issue.',
-        'What design patterns do you commonly use?',
-        'How do you ensure code quality in your projects?',
-      ] : title.includes('data') || title.includes('analyst') ? [
-        'Explain the difference between INNER JOIN and LEFT JOIN.',
-        'How would you clean and prepare a messy dataset?',
-        'Describe your experience with data visualization tools.',
-        'What metrics would you track for an e-commerce platform?',
-        'Explain the concept of A/B testing and when to use it.',
-        'Walk through your approach to exploratory data analysis.',
-      ] : title.includes('product') ? [
-        'How would you prioritize features for a new product launch?',
-        'Describe a product you admire and explain why.',
-        'How do you measure product success?',
-        'Walk me through how you would improve an existing feature.',
-        'How do you handle conflicting stakeholder requirements?',
-        'Describe your experience with user research methodologies.',
-      ] : [
-        'Describe your experience relevant to this role.',
-        'What specific skills make you suitable for this position?',
-        'How do you stay updated in your field?',
-        'Describe a project where you delivered measurable results.',
-        'How do you approach problem-solving in your work?',
-        'What tools and technologies are you proficient with?',
-      ],
-      salaryQuestions: [
-        'What is your current CTC and expected CTC?',
-        'Are you open to negotiation on the offered package?',
-        'Do you have any other offers currently?',
-        'What components are most important to you in compensation?',
-      ],
-      switchQuestions: [
-        'Why are you switching from your current domain?',
-        'How will your previous experience benefit this role?',
-        'What steps have you taken to prepare for this transition?',
-        'Are you willing to start at a junior level in the new domain?',
-      ],
-      noticePeriodQuestions: [
-        'What is your current notice period?',
-        'Can you negotiate an early release?',
-        'Would you be able to join immediately if required?',
-        'Are you currently serving notice?',
-      ],
-    });
+  const [loading, setLoading] = useState(false);
+
+  const generateQuestions = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/ai/interview-prep', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobTitle: newPrep.jobTitle, company: newPrep.company }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      setGenerated(data);
+    } catch (err: any) {
+      alert('Failed to generate questions: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const savePrep = async () => {
@@ -119,7 +78,9 @@ export default function InterviewPrep() {
             </div>
           </div>
           <div className="flex gap-3">
-            <button className="btn btn-primary" onClick={generateQuestions} disabled={!newPrep.jobTitle || !newPrep.company}>🎯 Generate Questions</button>
+            <button className="btn btn-primary" onClick={generateQuestions} disabled={!newPrep.jobTitle || !newPrep.company || loading}>
+              {loading ? '⏳ Generating...' : '🎯 Generate Questions'}
+            </button>
             <button className="btn btn-ghost" onClick={() => { setShowCreate(false); setGenerated(null); }}>Cancel</button>
           </div>
 

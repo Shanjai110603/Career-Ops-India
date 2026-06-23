@@ -7,29 +7,48 @@ export default function SkillGap() {
 
   useEffect(() => { fetch('/api/skill-gap-plans').then(r => r.json()).then(d => setPlans(Array.isArray(d) ? d : [])).catch(() => {}); }, []);
 
-  const analyze = async () => {
-    const current = form.currentSkills.split(',').map(s => s.trim()).filter(Boolean);
-    const required = form.requiredSkills.split(',').map(s => s.trim()).filter(Boolean);
-    const transferable = current.filter(s => required.some(r => r.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(r.toLowerCase())));
-    const missing = required.filter(r => !current.some(s => r.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(r.toLowerCase())));
+  const [loading, setLoading] = useState(false);
 
-    await fetch('/api/skill-gap-plans', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        targetRole: form.targetRole,
-        transferableSkills: transferable,
-        missingSkills: missing,
-        shouldApplyNow: missing.length <= 2,
-        recommendation: missing.length === 0 ? 'You already have all required skills!' : missing.length <= 2 ? 'Minor gaps — apply now while upskilling.' : 'Significant gaps — focus on learning before applying.',
-        plan7Day: missing.slice(0, 2).map(s => `Start learning ${s} — find a beginner resource`),
-        plan30Day: missing.slice(0, 3).map(s => `Complete an introductory course on ${s}`),
-        plan90Day: missing.map(s => `Build a project demonstrating ${s}`),
-      }),
-    });
-    setShowCreate(false);
-    const res = await fetch('/api/skill-gap-plans');
-    setPlans(await res.json());
+  const analyze = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/ai/skill-gap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetRole: form.targetRole,
+          currentSkills: form.currentSkills,
+          requiredSkills: form.requiredSkills
+        }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      await fetch('/api/skill-gap-plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetRole: form.targetRole,
+          transferableSkills: data.transferableSkills || [],
+          missingSkills: data.missingSkills || [],
+          shouldApplyNow: !!data.shouldApplyNow,
+          recommendation: data.recommendation || '',
+          plan7Day: data.plan7Day || [],
+          plan30Day: data.plan30Day || [],
+          plan90Day: data.plan90Day || [],
+        }),
+      });
+
+      setShowCreate(false);
+      const listRes = await fetch('/api/skill-gap-plans');
+      setPlans(await listRes.json());
+    } catch (err: any) {
+      alert('Failed to analyze gaps: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -55,7 +74,9 @@ export default function SkillGap() {
             <input className="form-input" value={form.requiredSkills} onChange={e => setForm({ ...form, requiredSkills: e.target.value })} placeholder="Python, SQL, Tableau, Statistics, Machine Learning..." />
           </div>
           <div className="flex gap-3">
-            <button className="btn btn-primary" onClick={analyze} disabled={!form.targetRole}>📊 Analyze Gaps</button>
+            <button className="btn btn-primary" onClick={analyze} disabled={!form.targetRole || loading}>
+              {loading ? '⏳ Analyzing...' : '📊 Analyze Gaps'}
+            </button>
             <button className="btn btn-ghost" onClick={() => setShowCreate(false)}>Cancel</button>
           </div>
         </div>
