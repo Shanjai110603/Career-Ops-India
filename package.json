@@ -1,0 +1,35 @@
+{
+  "name": "career-ops-india",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-first, India-adapted, AI-agnostic job search and career-switch operating system",
+  "author": "Shanjai",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Shanjai110603/Career-Ops-India.git"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:web": "turbo run dev --filter=@career-ops/web",
+    "dev:site": "turbo run dev --filter=@career-ops/site",
+    "build": "turbo run build",
+    "build:web": "turbo run build --filter=@career-ops/web",
+    "build:site": "turbo run build --filter=@career-ops/site",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "clean": "turbo run clean",
+    "db:migrate": "turbo run db:migrate --filter=@career-ops/db",
+    "db:push": "turbo run db:push --filter=@career-ops/db",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.9.18",
+    "typescript": "^5.6.0"
+  }
+}

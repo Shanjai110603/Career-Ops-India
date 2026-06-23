@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  career-ops:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - career-ops-data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_PROVIDER=sqlite
+      - SQLITE_PATH=/app/data/career-ops.db
+      - DEPLOYMENT_MODE=self-hosted
+    restart: unless-stopped
+
+volumes:
+  career-ops-data:
