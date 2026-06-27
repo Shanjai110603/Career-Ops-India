@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 
 export default function AdminProfiles() {
   const [profiles, setProfiles] = useState<any[]>([]);
@@ -9,14 +10,14 @@ export default function AdminProfiles() {
     <div className="animate-fade-in">
       <div className="flex items-center justify-between mb-6">
         <p className="text-muted text-sm">{profiles.length} profile{profiles.length !== 1 ? 's' : ''}</p>
-        <a href="/profile" className="btn btn-primary">👤 Edit Profile</a>
+        <Link to="/profile" className="btn btn-primary">👤 Edit Profile</Link>
       </div>
 
       {profiles.length > 0 ? (
         <div className="flex flex-col gap-4">
           {profiles.map((p: any) => {
             const skills = JSON.parse(p.skills || '[]');
-            const targetRoles = JSON.parse(p.target_roles || '[]');
+            const targetRoles = JSON.parse(p.targetRoles || '[]');
             return (
               <div key={p.id} className="card">
                 <div className="flex items-center justify-between mb-3">
@@ -24,15 +25,15 @@ export default function AdminProfiles() {
                     <div className="stat-icon purple" style={{ fontSize: '1.5rem' }}>👤</div>
                     <div>
                       <h4 style={{ fontWeight: 600 }}>{p.name || 'Unnamed'}</h4>
-                      <p className="text-muted text-xs">{p.email || 'No email'} · {p.location || 'No location'} · {p.experience_years || 0} yrs</p>
+                      <p className="text-muted text-xs">{p.email || 'No email'} · {p.location || 'No location'} · {p.experienceYears || 0} yrs</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <span className={`badge ${p.is_active ? 'badge-success' : 'badge-neutral'}`}>{p.is_active ? 'Active' : 'Inactive'}</span>
-                    {p.is_career_switching && <span className="badge badge-warning">Career Switch</span>}
+                    <span className={`badge ${p.isActive ? 'badge-success' : 'badge-neutral'}`}>{p.isActive ? 'Active' : 'Inactive'}</span>
+                    {p.isCareerSwitching && <span className="badge badge-warning">Career Switch</span>}
                   </div>
                 </div>
-                {p.current_role && <p className="text-sm mb-2">Current: <strong>{p.current_role}</strong></p>}
+                {p.currentRole && <p className="text-sm mb-2">Current: <strong>{p.currentRole}</strong></p>}
                 {targetRoles.length > 0 && <p className="text-sm mb-2">Target: {targetRoles.join(', ')}</p>}
                 {skills.length > 0 && (
                   <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
@@ -49,7 +50,7 @@ export default function AdminProfiles() {
           <div className="empty-state-icon">👥</div>
           <div className="empty-state-title">No Profiles</div>
           <div className="empty-state-text">Create your profile to get started with scoring and personalized recommendations.</div>
-          <a href="/profile" className="btn btn-primary">Create Profile</a>
+          <Link to="/profile" className="btn btn-primary">Create Profile</Link>
         </div>
       )}
     </div>

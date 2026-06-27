@@ -74,7 +74,7 @@ export default function AdminSecurity() {
                 {auditLog.slice(0, 30).map((log: any) => (
                   <tr key={log.id}>
                     <td><span className="badge badge-neutral">{log.action}</span></td>
-                    <td className="text-sm">{log.entity_type} / {log.entity_id?.slice(0, 8)}</td>
+                    <td className="text-sm">{log.entityType} / {log.entityId?.slice(0, 8)}</td>
                     <td className="text-xs text-muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{log.details?.slice(0, 50) || '—'}</td>
                     <td className="text-xs text-muted">{log.timestamp ? new Date(log.timestamp).toLocaleString('en-IN') : ''}</td>
                   </tr>

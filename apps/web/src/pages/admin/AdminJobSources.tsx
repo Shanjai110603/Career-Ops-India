@@ -5,7 +5,29 @@ export default function AdminJobSources() {
   const [showAdd, setShowAdd] = useState(false);
   const [newSource, setNewSource] = useState({ name: '', type: 'portal', baseUrl: '', priority: 5, scanSchedule: '', enabled: true });
 
+  const [scanning, setScanning] = useState(false);
+
   useEffect(() => { fetch('/api/job-sources').then(r => r.json()).then(d => setSources(Array.isArray(d) ? d : [])).catch(() => {}); }, []);
+
+  const triggerScan = async (sourceId?: string) => {
+    setScanning(true);
+    try {
+      const res = await fetch('/api/jobs/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceId })
+      });
+      const data = await res.json();
+      alert(`Scan complete! Found ${data.totalFetched} jobs, saved ${data.savedCount} new ones.`);
+      
+      // Reload sources
+      fetch('/api/job-sources').then(r => r.json()).then(d => setSources(Array.isArray(d) ? d : []));
+    } catch (err: any) {
+      alert('Scan failed: ' + err.message);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   const addSource = async () => {
     await fetch('/api/job-sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSource) });
@@ -40,6 +62,9 @@ export default function AdminJobSources() {
       <div className="flex items-center justify-between mb-6">
         <p className="text-muted text-sm">{sources.length} job source{sources.length !== 1 ? 's' : ''} configured</p>
         <div className="flex gap-2">
+          <button className="btn btn-secondary" onClick={() => triggerScan()} disabled={scanning}>
+            {scanning ? '⏳ Scanning...' : '🔍 Scan All Now'}
+          </button>
           {sources.length === 0 && <button className="btn btn-secondary" onClick={seedSources}>🌱 Seed Default Sources</button>}
           <button className="btn btn-primary" onClick={() => setShowAdd(true)}>➕ Add Source</button>
         </div>
@@ -48,16 +73,21 @@ export default function AdminJobSources() {
       {sources.length > 0 ? (
         <div className="table-container">
           <table>
-            <thead><tr><th>Name</th><th>Type</th><th>URL</th><th>Priority</th><th>Status</th><th>Last Scan</th></tr></thead>
+            <thead><tr><th>Name</th><th>Type</th><th>URL</th><th>Priority</th><th>Status</th><th>Last Scan</th><th>Actions</th></tr></thead>
             <tbody>
               {sources.map((s: any) => (
                 <tr key={s.id}>
                   <td style={{ fontWeight: 500 }}>{s.name}</td>
                   <td><span className="badge badge-neutral">{s.type}</span></td>
-                  <td className="text-xs text-muted">{s.base_url || '—'}</td>
+                  <td className="text-xs text-muted">{s.baseUrl || '—'}</td>
                   <td className="text-sm">{s.priority}/10</td>
                   <td><span className={`badge ${s.enabled ? 'badge-success' : 'badge-neutral'}`}>{s.enabled ? 'Active' : 'Disabled'}</span></td>
-                  <td className="text-xs text-muted">{s.last_scan_at || 'Never'}</td>
+                  <td className="text-xs text-muted">{s.lastScanAt ? new Date(s.lastScanAt).toLocaleString('en-IN') : 'Never'}</td>
+                  <td>
+                    <button className="btn btn-secondary btn-sm" onClick={() => triggerScan(s.id)} disabled={scanning}>
+                      {scanning ? '⏳' : '🔍 Scan'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

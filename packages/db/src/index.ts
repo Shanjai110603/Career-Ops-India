@@ -342,3 +342,4 @@ export function closeDb() {
 }
 
 export { schema };
+export { syncMarkdownWithDatabase } from './sync-markdown.js';

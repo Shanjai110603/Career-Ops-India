@@ -1,7 +1,76 @@
 /* =========================================================================
  * Career-Ops India — Job Deduplication Engine
- * Deterministic fingerprint-based dedup for job listings
+ * Deterministic tokenizer-based Jaccard matching for job titles and roles
  * ========================================================================= */
+
+// Tokens that almost every role shares must not count as strong matching
+// signals. Seniority, work mode, contract shape, locations, and other generic words.
+export const ROLE_STOPWORDS = new Set([
+  // seniority / level
+  'junior', 'mid', 'middle', 'senior', 'staff', 'principal', 'lead', 'head',
+  'chief', 'associate', 'intern', 'entry', 'level',
+  // contract / mode
+  'remote', 'hybrid', 'onsite', 'contract', 'contractor', 'freelance',
+  'fulltime', 'parttime', 'permanent', 'temporary', 'intern', 'internship',
+  // generic job words
+  'role', 'position', 'opportunity', 'team', 'based',
+  // very common locations
+  'bangalore', 'bengaluru', 'mumbai', 'delhi', 'hyderabad', 'pune', 'chennai',
+  'london', 'berlin', 'paris', 'madrid', 'barcelona', 'amsterdam', 'dublin',
+  'york', 'francisco', 'seattle', 'boston', 'austin', 'chicago', 'toronto',
+  'tokyo', 'singapore', 'sydney', 'melbourne', 'lisbon', 'warsaw',
+  // regions / countries
+  'europe', 'emea', 'apac', 'latam', 'americas', 'india', 'spain', 'germany',
+  'france', 'italy', 'canada', 'brazil', 'mexico', 'japan',
+  // prepositions leaking through the length filter
+  'with', 'from', 'into', 'over', 'this', 'that',
+]);
+
+// Short specialty acronyms that are discriminating despite their length.
+export const SHORT_SPECIALTY = new Set([
+  'api', 'sre', 'sdk', 'cli', 'gpu', 'cpu',
+  'ios', 'qa', 'ux', 'ui', 'ar', 'vr',
+  'ocr', 'crm', 'erp',
+]);
+
+// Generic role-level descriptors. Two titles whose only overlap is in this set
+// are not the same opening; they are merely written at the same role altitude.
+export const BASELINE_TOKENS = new Set([
+  'software', 'engineer', 'developer', 'manager', 'architect',
+  'analyst', 'designer', 'consultant', 'specialist',
+  'platform', 'systems', 'services',
+  'backend', 'frontend', 'full', 'stack', 'fullstack',
+]);
+
+/** Convert a role title into content tokens used for fuzzy matching. */
+export function roleTokens(role: string): string[] {
+  const text = typeof role === 'string' ? role : String(role ?? '');
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => (w.length > 3 || SHORT_SPECIALTY.has(w)) && !ROLE_STOPWORDS.has(w));
+}
+
+/** Decide whether two role titles are likely the same opening. */
+export function roleFuzzyMatch(a: string, b: string): boolean {
+  const wordsA = [...new Set(roleTokens(a))];
+  const wordsB = [...new Set(roleTokens(b))];
+  if (wordsA.length === 0 || wordsB.length === 0) return false;
+
+  const setB = new Set(wordsB);
+  const overlap = wordsA.filter(w => setB.has(w));
+  if (overlap.length < 2) return false;
+
+  // Require at least one non-baseline token in the overlap. Roles that share
+  // only generic descriptors like [software, engineer] are not the same opening.
+  const discriminating = overlap.filter(w => !BASELINE_TOKENS.has(w));
+  if (discriminating.length === 0) return false;
+
+  // Jaccard ratio of overlap / union
+  const union = new Set([...wordsA, ...wordsB]).size;
+  return overlap.length / union >= 0.6;
+}
 
 /** Generate a fingerprint for deduplication. */
 export function generateJobFingerprint(job: {
@@ -29,49 +98,18 @@ export function jobSimilarity(
   a: { title: string; company: string; location: string; description?: string },
   b: { title: string; company: string; location: string; description?: string }
 ): number {
-  let score = 0;
-
-  if (a.company.toLowerCase().trim() === b.company.toLowerCase().trim()) score += 0.4;
-
-  const titleSim = stringSimilarity(a.title.toLowerCase(), b.title.toLowerCase());
-  score += titleSim * 0.3;
-
-  if (a.location.toLowerCase().trim() === b.location.toLowerCase().trim()) score += 0.15;
-
-  if (a.description && b.description) {
-    const descSim = stringSimilarity(
-      a.description.toLowerCase().slice(0, 200),
-      b.description.toLowerCase().slice(0, 200)
-    );
-    score += descSim * 0.15;
+  if (a.company.toLowerCase().trim() !== b.company.toLowerCase().trim()) return 0;
+  
+  if (roleFuzzyMatch(a.title, b.title)) {
+    return 1.0;
   }
-
-  return Math.min(1, score);
-}
-
-/** Simple string similarity using bigram overlap (Dice coefficient). */
-function stringSimilarity(a: string, b: string): number {
-  if (a === b) return 1;
-  if (a.length < 2 || b.length < 2) return 0;
-
-  const bigramsA = new Set<string>();
-  const bigramsB = new Set<string>();
-
-  for (let i = 0; i < a.length - 1; i++) bigramsA.add(a.substring(i, i + 2));
-  for (let i = 0; i < b.length - 1; i++) bigramsB.add(b.substring(i, i + 2));
-
-  let intersection = 0;
-  for (const bg of bigramsA) {
-    if (bigramsB.has(bg)) intersection++;
-  }
-
-  return (2 * intersection) / (bigramsA.size + bigramsB.size);
+  
+  return 0;
 }
 
 /** Deduplicate a list of jobs. */
 export function deduplicateJobs<T extends { title: string; company: string; location: string }>(
-  jobs: T[],
-  threshold: number = 0.75
+  jobs: T[]
 ): { unique: T[]; duplicates: { job: T; duplicateOf: T }[] } {
   const unique: T[] = [];
   const duplicates: { job: T; duplicateOf: T }[] = [];
@@ -79,7 +117,7 @@ export function deduplicateJobs<T extends { title: string; company: string; loca
   for (const job of jobs) {
     let isDuplicate = false;
     for (const existing of unique) {
-      if (jobSimilarity(job, existing) >= threshold) {
+      if (jobSimilarity(job, existing) >= 0.6) {
         duplicates.push({ job, duplicateOf: existing });
         isDuplicate = true;
         break;

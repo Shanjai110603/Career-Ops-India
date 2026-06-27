@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 
 export default function Tracker() {
   const [apps, setApps] = useState<any[]>([]);
@@ -6,12 +7,90 @@ export default function Tracker() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [newApp, setNewApp] = useState({ company: '', jobTitle: '', status: 'discovered', location: '', workMode: '', salaryText: '', notes: '' });
 
+  // Resume tailoring states
+  const [showTailorModal, setShowTailorModal] = useState(false);
+  const [resumes, setResumes] = useState<any[]>([]);
+  const [selectedApp, setSelectedApp] = useState<any>(null);
+  const [selectedResumeId, setSelectedResumeId] = useState('');
+  const [jobDescription, setJobDescription] = useState('');
+  const [tailoring, setTailoring] = useState(false);
+
   const loadApps = () => {
     const params = filter !== 'all' ? `?status=${filter}` : '';
     fetch(`/api/applications${params}`).then(r => r.json()).then(d => setApps(Array.isArray(d) ? d : [])).catch(() => setApps([]));
   };
 
   useEffect(() => { loadApps(); }, [filter]);
+
+  const openTailorModal = async (app: any) => {
+    setSelectedApp(app);
+    setJobDescription('');
+    setSelectedResumeId('');
+    setShowTailorModal(true);
+
+    // Fetch master resumes
+    try {
+      const res = await fetch('/api/resumes');
+      const data = await res.json();
+      const masters = data.filter((r: any) => r.type === 'master');
+      setResumes(masters);
+      if (masters.length > 0) {
+        setSelectedResumeId(masters[0].id);
+      }
+    } catch (err) {
+      console.error('Failed to load resumes:', err);
+    }
+
+    // Prefill job description if jobId exists
+    if (app.jobId) {
+      try {
+        const jobRes = await fetch(`/api/jobs/${app.jobId}`);
+        const jobData = await jobRes.json();
+        if (jobData && jobData.description) {
+          setJobDescription(jobData.description);
+        }
+      } catch (err) {
+        console.error('Failed to fetch job description:', err);
+      }
+    }
+  };
+
+  const handleTailorResume = async () => {
+    if (!selectedResumeId || !selectedApp) return;
+    setTailoring(true);
+    try {
+      const res = await fetch(`/api/resumes/${selectedResumeId}/tailor`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobDescription,
+          company: selectedApp.company,
+          jobTitle: selectedApp.jobTitle,
+          jobId: selectedApp.jobId,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      // Link resume to application and move status to resume_tailored
+      await fetch(`/api/applications/${selectedApp.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resumeVersionId: data.id,
+          status: 'resume_tailored'
+        }),
+      });
+
+      alert('Resume tailored successfully and linked to application!');
+      setShowTailorModal(false);
+      loadApps();
+    } catch (err: any) {
+      alert('Tailoring failed: ' + err.message);
+    } finally {
+      setTailoring(false);
+    }
+  };
 
   const updateStatus = async (id: string, status: string) => {
     await fetch(`/api/applications/${id}`, {
@@ -106,9 +185,9 @@ export default function Tracker() {
               </tr>
             </thead>
             <tbody>
-              {apps.map((app: any) => (
+               {apps.map((app: any) => (
                 <tr key={app.id}>
-                  <td style={{ fontWeight: 500 }}>{app.job_title}</td>
+                  <td style={{ fontWeight: 500 }}>{app.jobTitle}</td>
                   <td>{app.company}</td>
                   <td>
                     <span className="badge" style={{ background: (statusColors[app.status] || '#64748b') + '22', color: statusColors[app.status] || '#64748b' }}>
@@ -116,16 +195,21 @@ export default function Tracker() {
                     </span>
                   </td>
                   <td className="text-muted text-sm">{app.location || '—'}</td>
-                  <td className="text-sm">{app.salary_text || '—'}</td>
-                  <td>{app.fit_score ? <span className="badge badge-info">{Math.round(app.fit_score)}</span> : '—'}</td>
+                  <td className="text-sm">{app.salaryText || '—'}</td>
+                  <td>{app.fitScore ? <span className="badge badge-info">{Math.round(app.fitScore)}</span> : '—'}</td>
                   <td className="text-muted text-xs" style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app.notes || '—'}</td>
                   <td>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2" style={{ alignItems: 'center' }}>
                       {(nextStatuses[app.status] || []).slice(0, 2).map(ns => (
                         <button key={ns} className="btn btn-ghost btn-sm" onClick={() => updateStatus(app.id, ns)} title={`Move to ${ns.replace(/_/g, ' ')}`}>
                           → {ns.replace(/_/g, ' ').slice(0, 10)}
                         </button>
                       ))}
+                      {['discovered', 'saved', 'shortlisted'].includes(app.status) && (
+                        <button className="btn btn-secondary btn-sm" onClick={() => openTailorModal(app)} title="Tailor Resume for this Job">
+                          📝 Tailor CV
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -196,6 +280,62 @@ export default function Tracker() {
               <button className="btn btn-secondary" onClick={() => setShowAddModal(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={addApp} disabled={!newApp.jobTitle || !newApp.company}>Track Application</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tailor Resume Modal */}
+      {showTailorModal && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowTailorModal(false)}>
+          <div className="modal" style={{ maxWidth: 650 }}>
+            <div className="modal-header">
+              <h3 className="modal-title">Tailor Resume for {selectedApp?.company}</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowTailorModal(false)}>✕</button>
+            </div>
+            
+            {resumes.length === 0 ? (
+              <div className="empty-state" style={{ padding: 'var(--space-4)' }}>
+                <p className="text-sm mb-4">You do not have any Master Resumes created. Please create a Master Resume in the Resume Studio first.</p>
+                <Link to="/resume" className="btn btn-primary">Go to Resume Studio</Link>
+              </div>
+            ) : (
+              <>
+                <div className="form-group">
+                  <label className="form-label">Select Base Master Resume</label>
+                  <select className="form-select" value={selectedResumeId} onChange={e => setSelectedResumeId(e.target.value)}>
+                    {resumes.map(r => <option key={r.id} value={r.id}>{r.name} (v{r.version})</option>)}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Target Role / Job Title</label>
+                  <input className="form-input" value={selectedApp?.jobTitle || ''} readOnly />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Target Company</label>
+                  <input className="form-input" value={selectedApp?.company || ''} readOnly />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Job Description (used for keyword matching and narrative alignment)</label>
+                  <textarea 
+                    className="form-textarea" 
+                    value={jobDescription} 
+                    onChange={e => setJobDescription(e.target.value)} 
+                    placeholder="Paste the target job description here. If this app is linked to a scraped job listing, this is prefilled automatically." 
+                    rows={8} 
+                  />
+                </div>
+
+                <div className="flex gap-3 mt-4" style={{ justifyContent: 'flex-end' }}>
+                  <button className="btn btn-secondary" onClick={() => setShowTailorModal(false)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={handleTailorResume} disabled={tailoring || !jobDescription}>
+                    {tailoring ? '⏳ Tailoring CV via AI...' : '🎯 Run Resume Tailoring'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

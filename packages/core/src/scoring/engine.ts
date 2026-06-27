@@ -114,7 +114,10 @@ function scoreSalaryFairness(input: ScoringInput): number {
 function scoreLocationViability(input: ScoringInput): number {
   const { userLocation, jobLocation, jobWorkMode } = input;
   if (['remote', 'wfh', 'work_from_anywhere'].includes(jobWorkMode)) return 95;
-  if (userLocation.toLowerCase() === jobLocation.toLowerCase()) return 100;
+  if (!userLocation || !jobLocation) return 70;
+  const userLocLower = userLocation.toLowerCase().trim();
+  const jobLocLower = jobLocation.toLowerCase().trim();
+  if (userLocLower === jobLocLower || jobLocLower.includes(userLocLower) || userLocLower.includes(jobLocLower)) return 100;
   return 50;
 }
 

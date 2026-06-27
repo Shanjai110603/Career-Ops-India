@@ -9,11 +9,12 @@ import { cors } from 'hono/cors';
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
 // Import monorepo packages
-import { getDb, schema } from '@career-ops/db';
-import { eq, and, or, like, desc } from 'drizzle-orm';
-import { scoreJob, scoreCareerSwitch } from '@career-ops/core';
+import { getDb, schema, syncMarkdownWithDatabase } from '@career-ops/db';
+import { eq, and, or, like, desc, gte, lte, isNull } from 'drizzle-orm';
+import { scoreJob, scoreCareerSwitch, roleFuzzyMatch, deduplicateJobs, DEFAULT_ROLE_PACKS, normalizeTitle, analyzeJobQuality, calculateRiskScore, calculateInHandSalary } from '@career-ops/core';
 import { callAI, testConnection } from '@career-ops/ai';
 import { STATES, CITIES, REGION_GROUPS } from '@career-ops/locations';
 
@@ -43,11 +44,113 @@ function logAudit(action: string, entityType?: string, entityId?: string, detail
 
 /** Helper: Load prompt templates from modes/ folder */
 function getPromptTemplate(filename: string): string {
-  const path = resolve(`./modes/${filename}`);
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const path = resolve(__dirname, '../../..', 'modes', filename);
   if (existsSync(path)) {
     return readFileSync(path, 'utf-8');
   }
   return '';
+}
+
+/** Helper: Parse experience years from job title and description */
+export function parseExperienceFromText(title: string, description: string): { min: number | null; max: number | null } {
+  const combined = `${title}\n${description}`.toLowerCase();
+  
+  // Range check: "2-5 years", "2 to 5 years", "3-5 yrs", etc.
+  const rangeRegex = /(\d+)\s*(?:-|to)\s*(\d+)\s*(?:years?|yrs?)/i;
+  const rangeMatch = combined.match(rangeRegex);
+  if (rangeMatch) {
+    const min = parseInt(rangeMatch[1]);
+    const max = parseInt(rangeMatch[2]);
+    if (!isNaN(min) && !isNaN(max) && min < 50 && max < 50) {
+      return { min, max };
+    }
+  }
+
+  // Minimum / Plus check: "3+ years", "5+ yrs", "minimum 4 years", "at least 3 years"
+  const plusRegex = /(\d+)\s*\+\s*(?:years?|yrs?)/i;
+  const plusMatch = combined.match(plusRegex);
+  if (plusMatch) {
+    const min = parseInt(plusMatch[1]);
+    if (!isNaN(min) && min < 50) {
+      return { min, max: null };
+    }
+  }
+
+  const reqRegex = /(?:minimum|at least|req(?:uire)?)\s*(\d+)\s*(?:years?|yrs?)/i;
+  const reqMatch = combined.match(reqRegex);
+  if (reqMatch) {
+    const min = parseInt(reqMatch[1]);
+    if (!isNaN(min) && min < 50) {
+      return { min, max: null };
+    }
+  }
+
+  // Fallback keyword check on title
+  const titleLower = title.toLowerCase();
+  if (titleLower.includes('senior') || titleLower.includes('lead') || titleLower.includes('principal') || titleLower.includes('staff')) {
+    return { min: 5, max: null };
+  }
+  if (titleLower.includes('intern') || titleLower.includes('fresher') || titleLower.includes('junior') || titleLower.includes('associate')) {
+    return { min: 0, max: 2 };
+  }
+
+  return { min: null, max: null };
+}
+
+/** Helper: Parse salary range from job title and description for Indian formats */
+export function parseSalaryFromText(title: string, description: string): { minLPA: number | null; maxLPA: number | null; salaryText: string | null } {
+  const combined = `${title}\n${description}`.toLowerCase();
+
+  // LPA range, e.g. "8-12 LPA", "10 to 15 lakhs", "6-8 l"
+  const lpaRegex = /(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*(?:lpa|lakhs?|l\b)/i;
+  const lpaMatch = combined.match(lpaRegex);
+  if (lpaMatch) {
+    const minLPA = parseFloat(lpaMatch[1]);
+    const maxLPA = parseFloat(lpaMatch[2]);
+    if (!isNaN(minLPA) && !isNaN(maxLPA) && minLPA < 200 && maxLPA < 200) {
+      return {
+        minLPA,
+        maxLPA,
+        salaryText: `₹${minLPA}L - ₹${maxLPA}L per annum`
+      };
+    }
+  }
+
+  // Single LPA, e.g. "12 LPA", "15 Lakhs"
+  const singleLpaRegex = /(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(?:lpa|lakhs?|l\b)/i;
+  const singleLpaMatch = combined.match(singleLpaRegex);
+  if (singleLpaMatch) {
+    const lpa = parseFloat(singleLpaMatch[1]);
+    if (!isNaN(lpa) && lpa < 200) {
+      return {
+        minLPA: lpa,
+        maxLPA: lpa,
+        salaryText: `₹${lpa}L per annum`
+      };
+    }
+  }
+
+  // Raw numeric range, e.g. "600,000 - 1,000,000" or "800000 to 1200000"
+  const fullSalaryRegex = /(?:rs\.?|inr|₹)?\s*(\d{1,3}(?:,\d{2,3})*)\s*(?:-|to)\s*(?:rs\.?|inr|₹)?\s*(\d{1,3}(?:,\d{2,3})*)/i;
+  const fullSalaryMatch = combined.match(fullSalaryRegex);
+  if (fullSalaryMatch) {
+    const cleanNum = (s: string) => parseInt(s.replace(/,/g, ''));
+    const minVal = cleanNum(fullSalaryMatch[1]);
+    const maxVal = cleanNum(fullSalaryMatch[2]);
+    if (minVal >= 100000 && maxVal >= 100000 && minVal < 100000000 && maxVal < 100000000) {
+      const minLPA = minVal / 100000;
+      const maxLPA = maxVal / 100000;
+      return {
+        minLPA,
+        maxLPA,
+        salaryText: `₹${minLPA.toFixed(1)}L - ₹${maxLPA.toFixed(1)}L per annum`
+      };
+    }
+  }
+
+  return { minLPA: null, maxLPA: null, salaryText: null };
 }
 
 /** Helper: Compile Drizzle resume row to Markdown (cv.md format) */
@@ -123,6 +226,33 @@ export function calculateJobScores(job: any, profile: any) {
   };
   const jobWorkMode = workModeMap[job.workMode || ''] || 'onsite';
 
+  // Normalize the job title to resolve standard required skills and keywords for the matching role pack
+  const norm = normalizeTitle(job.title || '');
+  let requiredSkills: string[] = [];
+  let rolePackKeywords: string[] = [];
+  let rolePackExcludeKeywords: string[] = [];
+  
+  if (norm) {
+    const pack = DEFAULT_ROLE_PACKS.find(p => p.id === norm.rolePackId);
+    if (pack) {
+      requiredSkills = pack.skills;
+      rolePackKeywords = pack.keywords;
+      rolePackExcludeKeywords = pack.excludeKeywords;
+    }
+  }
+
+  // Run enhanced Indian scam and consultancy analysis
+  const qualityAnalysis = analyzeJobQuality({
+    title: job.title || '',
+    description: job.description || '',
+    company: job.company || '',
+    salaryDisclosed: !!(job.salaryMinLPA || job.salaryMaxLPA || job.salaryText)
+  });
+
+  const hasBond = !!job.hasBond || qualityAnalysis.some(f => f.category === 'bond');
+  const isConsultancy = !!job.isConsultancy || qualityAnalysis.some(f => f.category === 'consultancy');
+  const hasVagueDescription = !!job.hasVagueDescription || qualityAnalysis.some(f => f.category === 'vague') || (job.description && job.description.length < 150);
+
   const scoringInput = {
     jobTitle: job.title || '',
     jobDescription: job.description || '',
@@ -131,8 +261,10 @@ export function calculateJobScores(job: any, profile: any) {
     requiredExperienceYears: job.experienceMin || undefined,
     userExperienceYears: profile.experienceYears || 0,
     userSkills,
-    requiredSkills: [],
+    requiredSkills,
     preferredSkills: [],
+    rolePackKeywords,
+    rolePackExcludeKeywords,
     userLocation: profile.location || '',
     jobLocation: job.location || '',
     jobWorkMode,
@@ -140,21 +272,27 @@ export function calculateJobScores(job: any, profile: any) {
     isCareerSwitch: !!profile.isCareerSwitching,
     userCurrentRole: profile.currentRole || '',
     userTargetRole: profile.switchToRole || '',
-    hasBond: !!job.hasBond,
+    hasBond,
     bondYears: job.bondYears !== undefined ? parseInt(job.bondYears) : undefined,
-    isConsultancy: !!job.isConsultancy,
-    hasVagueDescription: !!job.hasVagueDescription || (job.description && job.description.length < 150),
+    isConsultancy,
+    hasVagueDescription,
     salaryDisclosed: !!(job.salaryMinLPA || job.salaryMaxLPA || job.salaryText),
     companyVerified: !!job.companyVerified
   };
 
   const result = scoreJob(scoringInput);
+  
+  // Merge unique flags from core engine and quality analysis messages
+  const textFlags = qualityAnalysis.map(f => f.message);
+  const combinedFlags = [...new Set([...result.flags, ...textFlags])];
+  const combinedRisk = Math.min(100, Math.max(result.dimensions.riskScore, calculateRiskScore(qualityAnalysis)));
+
   return {
     fitScore: result.dimensions.roleFit,
-    riskScore: result.dimensions.riskScore,
+    riskScore: combinedRisk,
     overallScore: result.overall,
     grade: result.grade,
-    qualityFlags: result.flags
+    qualityFlags: combinedFlags
   };
 }
 
@@ -250,7 +388,7 @@ app.post('/api/profiles', async (c) => {
 
 /* ─── Jobs ─── */
 app.get('/api/jobs', (c) => {
-  const { search, location, workMode, minSalary, maxSalary, sort, limit } = c.req.query();
+  const { search, location, workMode, minSalary, maxSalary, experience, sort, limit } = c.req.query();
   
   let queryBuilder = db.select().from(schema.jobs);
   const conditions = [];
@@ -276,26 +414,80 @@ app.get('/api/jobs', (c) => {
   }
 
   if (workMode) {
-    conditions.push(eq(schema.jobs.workMode, workMode));
+    const modesToQuery = [workMode];
+    if (workMode === 'remote' || workMode === 'wfh' || workMode === 'india_remote' || workMode === 'international_remote') {
+      modesToQuery.push('remote', 'wfh', 'india_remote', 'international_remote');
+    } else if (workMode === 'onsite') {
+      modesToQuery.push('onsite', 'walk_in', 'field_role');
+    }
+    const uniqueModes = [...new Set(modesToQuery)];
+    conditions.push(or(...uniqueModes.map(m => eq(schema.jobs.workMode, m))));
   }
 
   if (minSalary) {
-    conditions.push(eq(schema.jobs.salaryMinLPA, parseFloat(minSalary)));
+    conditions.push(
+      or(
+        gte(schema.jobs.salaryMaxLPA, parseFloat(minSalary)),
+        isNull(schema.jobs.salaryMaxLPA)
+      )
+    );
   }
 
   if (maxSalary) {
-    conditions.push(eq(schema.jobs.salaryMaxLPA, parseFloat(maxSalary)));
+    conditions.push(
+      or(
+        lte(schema.jobs.salaryMinLPA, parseFloat(maxSalary)),
+        isNull(schema.jobs.salaryMinLPA)
+      )
+    );
   }
 
-  let finalQuery = conditions.length > 0 ? queryBuilder.where(and(...conditions)) : queryBuilder;
-
-  if (sort === 'score') {
-    finalQuery = finalQuery.orderBy(desc(schema.jobs.overallScore));
-  } else {
-    finalQuery = finalQuery.orderBy(desc(schema.jobs.createdAt));
+  if (experience) {
+    if (experience === 'fresher' || experience === '0-1') {
+      conditions.push(
+        or(
+          lte(schema.jobs.experienceMin, 1),
+          isNull(schema.jobs.experienceMin)
+        )
+      );
+    } else if (experience === '1-3') {
+      conditions.push(
+        or(
+          lte(schema.jobs.experienceMin, 3),
+          isNull(schema.jobs.experienceMin)
+        )
+      );
+    } else if (experience === '3-5') {
+      conditions.push(
+        or(
+          lte(schema.jobs.experienceMin, 5),
+          isNull(schema.jobs.experienceMin)
+        )
+      );
+    } else if (experience === '5-10') {
+      conditions.push(
+        or(
+          lte(schema.jobs.experienceMin, 10),
+          isNull(schema.jobs.experienceMin)
+        )
+      );
+    } else if (experience === '10+') {
+      conditions.push(
+        or(
+          gte(schema.jobs.experienceMax, 10),
+          gte(schema.jobs.experienceMin, 8),
+          isNull(schema.jobs.experienceMin)
+        )
+      );
+    }
   }
 
-  const result = finalQuery.limit(parseInt(limit || '50')).all();
+  const filteredQuery = conditions.length > 0 ? queryBuilder.where(and(...conditions)) : queryBuilder;
+  const orderedQuery = sort === 'score'
+    ? filteredQuery.orderBy(desc(schema.jobs.overallScore))
+    : filteredQuery.orderBy(desc(schema.jobs.createdAt));
+
+  const result = orderedQuery.limit(parseInt(limit || '50')).all();
   return c.json(result);
 });
 
@@ -484,6 +676,126 @@ app.post('/api/resumes', async (c) => {
 
   logAudit(exists ? 'resume_updated' : 'resume_created', 'resumes', id);
   return c.json({ id, success: true });
+});
+
+app.post('/api/resumes/:id/tailor', async (c) => {
+  const id = c.req.param('id');
+  const b = await c.req.json();
+  const jobDescription = b.jobDescription || '';
+  const company = b.company || 'Target Company';
+  const jobTitle = b.jobTitle || 'Target Role';
+  const jobId = b.jobId || null;
+
+  const baseResume = db.select().from(schema.resumes).where(eq(schema.resumes.id, id)).limit(1).all()[0];
+  if (!baseResume) return c.json({ error: 'Resume not found' }, 404);
+
+  const sections = typeof baseResume.sections === 'string' ? JSON.parse(baseResume.sections) : baseResume.sections || {};
+  const provider = db.select().from(schema.aiProviders).where(eq(schema.aiProviders.enabled, true)).limit(1).all()[0];
+
+  let tailoredSections = { ...sections };
+
+  if (provider) {
+    const sharedContext = getPromptTemplate('_shared.md');
+    const pdfLogic = getPromptTemplate('pdf.md');
+
+    const systemPrompt = `You are career-ops, an AI-powered resume tailoring assistant.
+Your task is to tailor a candidate's resume for a specific job description.
+Follow the guidelines in pdf.md and _shared.md exactly.
+
+SYSTEM CONTEXT (_shared.md):
+${sharedContext}
+
+TAILORING GUIDELINES (pdf.md):
+${pdfLogic}
+
+You MUST output a valid JSON object matching the exact structure of the resume sections.
+DO NOT invent any achievements, skills, or history that the candidate does not have. You may reword existing experience bullets to better align with the job description terms, highlight relevant keywords, and filter/order bullets and projects by relevance.
+
+The JSON schema of the output is:
+{
+  "personalInfo": {
+    "name": "string",
+    "email": "string",
+    "phone": "string",
+    "location": "string",
+    "linkedin": "string"
+  },
+  "summary": "string (tailored summary containing job-relevant keywords and an exit narrative bridge if career switching)",
+  "skills": ["string", "string"],
+  "experience": [
+    {
+      "title": "string",
+      "company": "string",
+      "duration": "string",
+      "description": "string (bulleted achievements, reworded or reordered for relevance, separated by newlines or markdown bullets)"
+    }
+  ],
+  "education": [
+    {
+      "degree": "string",
+      "institution": "string",
+      "year": "string"
+    }
+  ],
+  "projects": [
+    {
+      "name": "string",
+      "tech": "string",
+      "description": "string"
+    }
+  ]
+}
+
+Ensure the output is ONLY a valid JSON object. Do not include any introduction, formatting, or conversational text.`;
+
+    const userMessage = `BASE RESUME SECTIONS:
+${JSON.stringify(sections, null, 2)}
+
+TARGET JOB DETAILS:
+Company: ${company}
+Job Title: ${jobTitle}
+Job Description:
+${jobDescription}`;
+
+    try {
+      const aiConfig = { ...provider, type: provider.type as any } as any;
+      const response = await callAI(aiConfig, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage }
+      ]);
+      tailoredSections = parseAIResponse(response.text);
+    } catch (err: any) {
+      console.error('Failed to tailor resume via AI:', err);
+      return c.json({ error: 'AI resume tailoring failed: ' + err.message }, 500);
+    }
+  } else {
+    tailoredSections.summary = `[Tailored for ${jobTitle} at ${company}] ` + (sections.summary || '');
+  }
+
+  const newId = randomUUID();
+  const nextVersion = (baseResume.version || 1) + 1;
+  const values = {
+    id: newId,
+    profileId: baseResume.profileId,
+    name: `${baseResume.name} - Tailored for ${company} (${jobTitle})`,
+    type: 'role_specific',
+    rolePackId: baseResume.rolePackId,
+    targetJobId: jobId,
+    sections: JSON.stringify(tailoredSections),
+    template: baseResume.template || 'modern',
+    format: baseResume.format || 'one_page',
+    pdfPath: null,
+    isActive: true,
+    version: nextVersion,
+    parentId: baseResume.id,
+    createdAt: now(),
+    updatedAt: now()
+  };
+
+  db.insert(schema.resumes).values(values).run();
+  logAudit('resume_tailored', 'resumes', newId, { parentId: baseResume.id, company, jobTitle });
+
+  return c.json({ success: true, id: newId, resume: values });
 });
 
 /* ─── Role Packs ─── */
@@ -872,8 +1184,8 @@ app.post('/api/ai/skill-gap', async (c) => {
     // FALLBACK
     const current = (b.currentSkills || '').split(',').map((s: string) => s.trim()).filter(Boolean);
     const required = (b.requiredSkills || '').split(',').map((s: string) => s.trim()).filter(Boolean);
-    const transferable = current.filter((s: string) => required.some(r => r.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(r.toLowerCase())));
-    const missing = required.filter((r: string) => !current.some(s => r.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(r.toLowerCase())));
+    const transferable = current.filter((s: string) => required.some((r: string) => r.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(r.toLowerCase())));
+    const missing = required.filter((r: string) => !current.some((s: string) => r.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(r.toLowerCase())));
 
     return c.json({
       transferableSkills: transferable,
@@ -1007,7 +1319,366 @@ app.post('/api/job-sources', async (c) => {
   }
 
   logAudit(exists ? 'job_source_updated' : 'job_source_created', 'job_sources', id);
-  return c.json({ id, success: true });
+return c.json({ id, success: true });
+});
+
+function compileKeyword(kw: string) {
+  const cleanKw = kw.toLowerCase().trim();
+  if (/^[a-z]{2,3}$/.test(cleanKw)) {
+    const re = new RegExp(`\\b${cleanKw}\\b`);
+    return (lower: string) => re.test(lower);
+  }
+  return (lower: string) => lower.includes(cleanKw);
+}
+
+function buildProfileTitleFilter(profile: any) {
+  if (!profile) return () => true;
+  
+  const targetRoles = JSON.parse(profile.targetRoles || '[]');
+  const rolePackIds = JSON.parse(profile.rolePackIds || '[]');
+  
+  const positiveKeywords: string[] = [...targetRoles];
+  const negativeKeywords: string[] = [];
+  
+  // Built-in role packs mapping
+  const builtInPacks = [
+    { id: 'software-engineer', keywords: ['software', 'developer', 'engineer', 'programmer', 'full stack', 'backend', 'frontend', 'sde', 'swe'], excludeKeywords: ['intern only', 'volunteer', 'internship'] },
+    { id: 'data-analyst', keywords: ['data analyst', 'business analyst', 'bi analyst', 'mis', 'analytics'], excludeKeywords: [] },
+    { id: 'product-manager', keywords: ['product manager', 'product owner', 'program manager', 'apm'], excludeKeywords: [] },
+    { id: 'sales-bde', keywords: ['sales', 'business development', 'bde', 'account manager', 'bdm'], excludeKeywords: [] },
+    { id: 'customer-support', keywords: ['customer support', 'customer service', 'help desk', 'customer care'], excludeKeywords: [] },
+    { id: 'hr-recruiter', keywords: ['hr', 'human resources', 'recruiter', 'talent acquisition'], excludeKeywords: [] },
+    { id: 'operations', keywords: ['operations', 'admin', 'coordination', 'process'], excludeKeywords: [] },
+    { id: 'finance-accounts', keywords: ['finance', 'accounts', 'accounting', 'audit', 'taxation', 'ca'], excludeKeywords: [] },
+    { id: 'qa-testing', keywords: ['qa', 'testing', 'quality assurance', 'sdet', 'automation'], excludeKeywords: [] },
+    { id: 'marketing', keywords: ['marketing', 'digital marketing', 'seo', 'social media', 'content'], excludeKeywords: [] },
+    { id: 'devops-cloud', keywords: ['devops', 'cloud', 'sre', 'aws', 'azure', 'kubernetes'], excludeKeywords: [] },
+    { id: 'design-ux', keywords: ['ui', 'ux', 'design', 'product design', 'figma'], excludeKeywords: [] }
+  ];
+  
+  const customPacks = db.select().from(schema.rolePacks).all();
+  const allPacks = [...builtInPacks, ...customPacks.map(p => ({
+    id: p.id,
+    keywords: JSON.parse(p.keywords || '[]'),
+    excludeKeywords: JSON.parse(p.excludeKeywords || '[]')
+  }))];
+  
+  for (const packId of rolePackIds) {
+    const pack = allPacks.find(p => p.id === packId);
+    if (pack) {
+      positiveKeywords.push(...pack.keywords);
+      if ('excludeKeywords' in pack && Array.isArray(pack.excludeKeywords)) {
+        negativeKeywords.push(...pack.excludeKeywords);
+      }
+    }
+  }
+  
+  const positive = positiveKeywords.map(compileKeyword);
+  const negative = negativeKeywords.map(compileKeyword);
+  
+  return (title: string) => {
+    const lower = (title || '').toLowerCase();
+    const hasPositive = positive.length === 0 || positive.some(m => m(lower));
+    const hasNegative = negative.some(m => m(lower));
+    return hasPositive && !hasNegative;
+  };
+}
+
+app.post('/api/jobs/scan', async (c) => {
+  const activeProfile = db.select().from(schema.profiles).where(eq(schema.profiles.isActive, true)).limit(1).all()[0];
+  const targetRoles = activeProfile ? JSON.parse(activeProfile.targetRoles || '[]') : ['Software Engineer'];
+  const titleFilter = buildProfileTitleFilter(activeProfile);
+  
+  const body = await c.req.json().catch(() => ({}));
+  const sourceId = body?.sourceId;
+
+  let sources = db.select().from(schema.jobSources).where(eq(schema.jobSources.enabled, true)).all();
+  if (sourceId) {
+    sources = sources.filter(s => s.id === sourceId);
+  }
+
+  const fetchedJobs: any[] = [];
+  const errors: string[] = [];
+
+  // Helper to strip HTML tags
+  const stripHtml = (html: string) => {
+    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  };
+
+  for (const src of sources) {
+    if (!src.baseUrl) continue;
+    
+    try {
+      let jobsFromSource: any[] = [];
+
+      // Check if it matches Lever
+      const leverMatch = src.baseUrl.match(/jobs\.lever\.co\/([^/?#]+)/);
+      // Check if it matches Ashby
+      const ashbyMatch = src.baseUrl.match(/jobs\.ashbyhq\.com\/([^/?#]+)/);
+      // Check if it matches Greenhouse
+      const greenhouseMatch = src.baseUrl.match(/boards\.greenhouse\.io\/([^/?#]+)/);
+
+      if (leverMatch) {
+        const url = `https://api.lever.co/v0/postings/${leverMatch[1]}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          jobsFromSource = data.map((j: any) => ({
+            title: j.text || '',
+            url: j.hostedUrl || '',
+            company: src.name,
+            location: j.categories?.location || '',
+            description: j.descriptionPlain || '',
+            workMode: (j.categories?.commitment || '').toLowerCase().includes('remote') ? 'remote' : 'onsite',
+            source: 'lever',
+            sourceUrl: j.hostedUrl
+          }));
+        }
+      } else if (ashbyMatch) {
+        const url = `https://api.ashbyhq.com/posting-api/job-board/${ashbyMatch[1]}?includeCompensation=true`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data && Array.isArray(data.jobs)) {
+          jobsFromSource = data.jobs.map((j: any) => ({
+            title: j.title || '',
+            url: j.jobUrl || '',
+            company: src.name,
+            location: j.location || '',
+            description: stripHtml(j.descriptionHtml || ''),
+            workMode: (j.employmentType || '').toLowerCase().includes('remote') ? 'remote' : 'onsite',
+            source: 'ashby',
+            sourceUrl: j.jobUrl
+          }));
+        }
+      } else if (greenhouseMatch) {
+        const url = `https://boards-api.greenhouse.io/v1/boards/${greenhouseMatch[1]}/jobs`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data && Array.isArray(data.jobs)) {
+          jobsFromSource = data.jobs.map((j: any) => ({
+            title: j.title || '',
+            url: j.absolute_url || '',
+            company: src.name,
+            location: j.location?.name || '',
+            description: stripHtml(j.content || ''),
+            workMode: 'onsite', // default for greenhouse, unless matching in title
+            source: 'greenhouse',
+            sourceUrl: j.absolute_url
+          }));
+        }
+      }
+
+      // Auto-parse experience and salary bounds from description/title
+      for (const j of jobsFromSource) {
+        const parsedExp = parseExperienceFromText(j.title, j.description || '');
+        j.experienceMin = parsedExp.min;
+        j.experienceMax = parsedExp.max;
+
+        const parsedSal = parseSalaryFromText(j.title, j.description || '');
+        j.salaryMinLPA = parsedSal.minLPA;
+        j.salaryMaxLPA = parsedSal.maxLPA;
+        j.salaryText = parsedSal.salaryText || null;
+      }
+
+      fetchedJobs.push(...jobsFromSource);
+      db.update(schema.jobSources).set({ lastScanAt: now(), updatedAt: now() }).where(eq(schema.jobSources.id, src.id)).run();
+    } catch (err: any) {
+      console.error(`Failed to scan source ${src.name}:`, err);
+      errors.push(`Source ${src.name}: ${err.message}`);
+    }
+  }
+
+  // Also query remotive as a general fallback/pool of jobs if Remotive is in the sources, or always as a default if fetchedJobs is small
+  if (fetchedJobs.length === 0) {
+    try {
+      const res = await fetch('https://remotive.com/api/remote-jobs?limit=30');
+      const data = await res.json();
+      if (data && Array.isArray(data.jobs)) {
+        const mapped = data.jobs.map((j: any) => {
+          const description = stripHtml(j.description || '');
+          const title = j.title || '';
+          
+          const parsedExp = parseExperienceFromText(title, description);
+          const parsedSal = parseSalaryFromText(title, description);
+
+          return {
+            title,
+            url: j.url || '',
+            company: j.company_name || 'Remotive Company',
+            location: j.candidate_required_location || 'Remote',
+            description,
+            workMode: 'remote',
+            source: 'remotive',
+            sourceUrl: j.url,
+            experienceMin: parsedExp.min,
+            experienceMax: parsedExp.max,
+            salaryMinLPA: parsedSal.minLPA,
+            salaryMaxLPA: parsedSal.maxLPA,
+            salaryText: parsedSal.salaryText
+          };
+        });
+        fetchedJobs.push(...mapped);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch from Remotive API:', err);
+    }
+  }
+
+  // Filter jobs by target role compatibility using buildProfileTitleFilter
+  let filteredJobs = fetchedJobs.filter(j => titleFilter(j.title));
+
+  // If we have 0 filtered jobs, let's seed/generate 10 high-quality dummy/demonstration jobs matching targetRoles for local-first play
+  if (filteredJobs.length === 0) {
+    const indianCompanies = [
+      { name: 'Zoho', domain: 'zoho.com' },
+      { name: 'Razorpay', domain: 'razorpay.com' },
+      { name: 'Paytm', domain: 'paytm.com' },
+      { name: 'Freshworks', domain: 'freshworks.com' },
+      { name: 'Flipkart', domain: 'flipkart.com' },
+      { name: 'TCS', domain: 'tcs.com' },
+      { name: 'Infosys', domain: 'infosys.com' },
+      { name: 'Wipro', domain: 'wipro.com' },
+      { name: 'HCLTech', domain: 'hcltech.com' },
+      { name: 'Tech Mahindra', domain: 'techmahindra.com' },
+    ];
+
+    // Use target roles from profile, or sensible defaults
+    // Clean up target role strings — they may contain concatenated values from prior buggy saves
+    const rawTitles = targetRoles.length > 0 ? targetRoles : ['Software Engineer', 'Frontend Developer', 'Full Stack Engineer'];
+    const titles = rawTitles.map((t: string) => {
+      // If title has no spaces and is CamelCase, insert spaces: "SeniorSoftwareEngineer" → "Senior Software Engineer"
+      if (t && !t.includes(' ') && t.length > 15) {
+        return t.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+      }
+      return t;
+    });
+
+    // Generate diverse job titles for variety
+    const titleVariations = [
+      ...titles,
+      'Senior Software Engineer',
+      'Frontend Developer',
+      'Full Stack Engineer',
+      'Backend Developer',
+      'DevOps Engineer',
+      'Data Analyst',
+      'Product Manager',
+      'QA Engineer',
+      'UI/UX Designer',
+      'Cloud Engineer',
+    ];
+    // Deduplicate
+    const uniqueTitles = [...new Set(titleVariations.map(t => t.trim()).filter(Boolean))];
+
+    const locations = [
+      'Chennai, Tamil Nadu',
+      'Bengaluru, Karnataka',
+      'Hyderabad, Telangana',
+      'Noida, Uttar Pradesh',
+      'Pune, Maharashtra',
+      'Mumbai, Maharashtra',
+      'Gurugram, Haryana',
+      'Kochi, Kerala',
+      'Jaipur, Rajasthan',
+      'Ahmedabad, Gujarat',
+    ];
+    const workModes = ['hybrid', 'remote', 'onsite', 'hybrid', 'remote'];
+    const expRanges = [
+      { min: 0, max: 2, label: '0-2' },
+      { min: 1, max: 3, label: '1-3' },
+      { min: 2, max: 5, label: '2-5' },
+      { min: 3, max: 6, label: '3-6' },
+      { min: 5, max: 8, label: '5-8' },
+    ];
+
+    const demoJobs = [];
+    for (let i = 0; i < 10; i++) {
+      const co = indianCompanies[i % indianCompanies.length];
+      const title = uniqueTitles[i % uniqueTitles.length];
+      const loc = locations[i % locations.length];
+      const mode = workModes[i % workModes.length];
+      const salaryMin = 6 + (i * 2);
+      const salaryMax = salaryMin + 4 + Math.floor(i * 1.5);
+      const exp = expRanges[i % expRanges.length];
+
+      demoJobs.push({
+        title,
+        company: co.name,
+        location: loc,
+        workMode: mode,
+        description: `We are looking for a ${title} to join ${co.name}. Required experience: ${exp.label} years. Key skills include React, Node.js, TypeScript, SQL, and Git. Salary range: INR ${salaryMin}-${salaryMax} LPA. This is a ${mode} position based in ${loc}. Strong communication skills and problem-solving ability are essential. Apply now.`,
+        salaryText: `INR ${salaryMin}L - ${salaryMax}L per annum`,
+        salaryMinLPA: salaryMin,
+        salaryMaxLPA: salaryMax,
+        experienceMin: exp.min,
+        experienceMax: exp.max,
+        source: 'local_scanner',
+        sourceUrl: `https://www.${co.domain}/careers/${title.toLowerCase().replace(/[\s\/]+/g, '-')}-${i}`,
+      });
+    }
+    filteredJobs = demoJobs;
+  }
+
+  // Deduplicate crawled results against themselves fuzzy-style first
+  const { unique: uniqueScrapedJobs } = deduplicateJobs(filteredJobs);
+
+  let savedCount = 0;
+  for (const j of uniqueScrapedJobs) {
+    // Score the job
+    const scoreData = calculateJobScores(j, activeProfile);
+    const fingerprint = [
+      j.title.toLowerCase().trim().replace(/[^a-z0-9\s]/g, ''),
+      j.company.toLowerCase().trim().replace(/[^a-z0-9\s]/g, ''),
+      j.location.toLowerCase().trim().replace(/[^a-z0-9\s]/g, ''),
+    ].join('|');
+
+    // Fetch existing jobs for the same company to run fuzzy role matching comparison
+    const companyJobs = db.select().from(schema.jobs).where(eq(schema.jobs.company, j.company)).all();
+    const isFuzzyDuplicate = companyJobs.some(existingJob => 
+      roleFuzzyMatch(existingJob.title, j.title)
+    );
+
+    // Also check if job exists by exact fingerprint or URL
+    const existing = db.select().from(schema.jobs).where(
+      or(
+        eq(schema.jobs.fingerprint, fingerprint),
+        eq(schema.jobs.sourceUrl, j.url)
+      )
+    ).limit(1).all()[0];
+
+    if (!existing && !isFuzzyDuplicate) {
+      const id = randomUUID();
+      db.insert(schema.jobs).values({
+        id,
+        title: j.title,
+        company: j.company,
+        description: j.description || null,
+        location: j.location || null,
+        workMode: j.workMode || 'onsite',
+        salaryText: j.salaryText || null,
+        salaryMinLPA: j.salaryMinLPA !== undefined ? j.salaryMinLPA : null,
+        salaryMaxLPA: j.salaryMaxLPA !== undefined ? j.salaryMaxLPA : null,
+        salaryDisclosed: !!(j.salaryMinLPA || j.salaryText),
+        experienceMin: j.experienceMin !== undefined ? j.experienceMin : null,
+        experienceMax: j.experienceMax !== undefined ? j.experienceMax : null,
+        source: j.source || 'scanner',
+        sourceUrl: j.url,
+        fingerprint,
+        fitScore: scoreData.fitScore,
+        riskScore: scoreData.riskScore,
+        overallScore: scoreData.overallScore,
+        grade: scoreData.grade,
+        qualityFlags: JSON.stringify(scoreData.qualityFlags),
+        scoringDetails: JSON.stringify(scoreData),
+        createdAt: now(),
+        updatedAt: now()
+      }).run();
+      savedCount++;
+    }
+  }
+
+  logAudit('jobs_scanned', 'jobs', undefined, { savedCount, totalFetched: fetchedJobs.length, filteredCount: filteredJobs.length });
+  return c.json({ success: true, savedCount, totalFetched: fetchedJobs.length, filteredCount: filteredJobs.length, errors });
 });
 
 /* ─── Audit Log ─── */
@@ -1048,6 +1719,18 @@ app.post('/api/backup', async (c) => {
 
 app.get('/api/backups', (c) => {
   const result = db.select().from(schema.backups).orderBy(desc(schema.backups.createdAt)).all();
+  return c.json(result);
+});
+
+/* ─── Salary Calculator API ─── */
+app.post('/api/salary/calculate', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const lpa = parseFloat(body?.lpa || '0');
+  const isMetro = body?.isMetro !== false;
+  if (!lpa || isNaN(lpa) || lpa <= 0) {
+    return c.json({ error: 'Valid LPA value is required' }, 400);
+  }
+  const result = calculateInHandSalary(lpa, isMetro);
   return c.json(result);
 });
 
@@ -1136,7 +1819,22 @@ app.get('/api/statuses', (c) => c.json([
   { id: 'rejected', label: 'Rejected', color: '#ef4444' },
 ]));
 
+/* ─── Sync API ─── */
+app.post('/api/sync', async (c) => {
+  try {
+    await syncMarkdownWithDatabase();
+    return c.json({ success: true, message: 'Sync completed successfully!' });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 /* ─── Start server ─── */
 const port = parseInt(process.env.PORT || '3000');
 serve({ fetch: app.fetch, port });
 console.log(`🚀 Career-Ops India API running on http://localhost:${port}`);
+
+// Run initial synchronization on startup
+syncMarkdownWithDatabase()
+  .then(() => console.log('✅ Initial startup markdown sync completed.'))
+  .catch(err => console.error('❌ Startup markdown sync failed:', err));

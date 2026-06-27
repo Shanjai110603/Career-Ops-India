@@ -57,68 +57,97 @@ export default function InterviewPrep() {
     </div>
   );
 
-  return (
-    <div className="animate-fade-in">
-      <div className="flex items-center justify-between mb-6">
-        <p className="text-muted text-sm">{preps.length} prep session{preps.length !== 1 ? 's' : ''}</p>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>🎤 New Interview Prep</button>
-      </div>
+      const [selectedPrepId, setSelectedPrepId] = useState<string | null>(null);
 
-      {showCreate && (
-        <div className="card mb-6">
-          <h3 className="card-title mb-4">Generate Interview Questions</h3>
-          <div className="form-row">
-            <div className="form-group">
-              <label className="form-label">Job Title *</label>
-              <input className="form-input" value={newPrep.jobTitle} onChange={e => setNewPrep({ ...newPrep, jobTitle: e.target.value })} placeholder="e.g. Software Engineer" />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Company *</label>
-              <input className="form-input" value={newPrep.company} onChange={e => setNewPrep({ ...newPrep, company: e.target.value })} placeholder="e.g. Flipkart" />
-            </div>
+      return (
+        <div className="animate-fade-in">
+          <div className="flex items-center justify-between mb-6">
+            <p className="text-muted text-sm">{preps.length} prep session{preps.length !== 1 ? 's' : ''}</p>
+            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>🎤 New Interview Prep</button>
           </div>
-          <div className="flex gap-3">
-            <button className="btn btn-primary" onClick={generateQuestions} disabled={!newPrep.jobTitle || !newPrep.company || loading}>
-              {loading ? '⏳ Generating...' : '🎯 Generate Questions'}
-            </button>
-            <button className="btn btn-ghost" onClick={() => { setShowCreate(false); setGenerated(null); }}>Cancel</button>
-          </div>
-
-          {generated && (
-            <div className="mt-6">
-              {renderQuestions('💼 HR / Behavioral Questions', generated.hrQuestions)}
-              {renderQuestions('🎯 Role-Specific Questions', generated.roleQuestions)}
-              {renderQuestions('💰 Salary & Negotiation', generated.salaryQuestions)}
-              {renderQuestions('🔄 Career Switch Questions', generated.switchQuestions)}
-              {renderQuestions('⏰ Notice Period Questions', generated.noticePeriodQuestions)}
-              <button className="btn btn-primary" onClick={savePrep}>💾 Save Prep Session</button>
+    
+          {showCreate && (
+            <div className="card mb-6">
+              <h3 className="card-title mb-4">Generate Interview Questions</h3>
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Job Title *</label>
+                  <input className="form-input" value={newPrep.jobTitle} onChange={e => setNewPrep({ ...newPrep, jobTitle: e.target.value })} placeholder="e.g. Software Engineer" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Company *</label>
+                  <input className="form-input" value={newPrep.company} onChange={e => setNewPrep({ ...newPrep, company: e.target.value })} placeholder="e.g. Flipkart" />
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button className="btn btn-primary" onClick={generateQuestions} disabled={!newPrep.jobTitle || !newPrep.company || loading}>
+                  {loading ? '⏳ Generating...' : '🎯 Generate Questions'}
+                </button>
+                <button className="btn btn-ghost" onClick={() => { setShowCreate(false); setGenerated(null); }}>Cancel</button>
+              </div>
+    
+              {generated && (
+                <div className="mt-6">
+                  {renderQuestions('💼 HR / Behavioral Questions', generated.hrQuestions)}
+                  {renderQuestions('🎯 Role-Specific Questions', generated.roleQuestions)}
+                  {renderQuestions('💰 Salary & Negotiation', generated.salaryQuestions)}
+                  {renderQuestions('🔄 Career Switch Questions', generated.switchQuestions)}
+                  {renderQuestions('⏰ Notice Period Questions', generated.noticePeriodQuestions)}
+                  <button className="btn btn-primary" onClick={savePrep}>💾 Save Prep Session</button>
+                </div>
+              )}
             </div>
           )}
-        </div>
-      )}
+    
+          {preps.length > 0 ? (
+            <div className="flex flex-col gap-4">
+              {preps.map((p: any) => {
+                const isOpen = selectedPrepId === p.id;
+                let hr: string[] = [];
+                let role: string[] = [];
+                let salary: string[] = [];
+                let sw: string[] = [];
+                let np: string[] = [];
+                try { hr = typeof p.hrQuestions === 'string' ? JSON.parse(p.hrQuestions) : p.hrQuestions || []; } catch {}
+                try { role = typeof p.roleQuestions === 'string' ? JSON.parse(p.roleQuestions) : p.roleQuestions || []; } catch {}
+                try { salary = typeof p.salaryQuestions === 'string' ? JSON.parse(p.salaryQuestions) : p.salaryQuestions || []; } catch {}
+                try { sw = typeof p.switchQuestions === 'string' ? JSON.parse(p.switchQuestions) : p.switchQuestions || []; } catch {}
+                try { np = typeof p.noticePeriodQuestions === 'string' ? JSON.parse(p.noticePeriodQuestions) : p.noticePeriodQuestions || []; } catch {}
 
-      {preps.length > 0 ? (
-        <div className="flex flex-col gap-4">
-          {preps.map((p: any) => (
-            <div key={p.id} className="card" style={{ padding: 'var(--space-5)' }}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 style={{ fontWeight: 600 }}>{p.job_title}</h4>
-                  <p className="text-muted text-sm">{p.company}</p>
-                </div>
-                <span className="text-xs text-muted">{p.created_at ? new Date(p.created_at).toLocaleDateString('en-IN') : ''}</span>
-              </div>
+                return (
+                  <div key={p.id} className="card" style={{ padding: 'var(--space-5)', cursor: 'pointer' }} onClick={() => setSelectedPrepId(isOpen ? null : p.id)}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 style={{ fontWeight: 600 }}>{p.jobTitle}</h4>
+                        <p className="text-muted text-sm">{p.company}</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-muted">{p.createdAt ? new Date(p.createdAt).toLocaleDateString('en-IN') : ''}</span>
+                        <span style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', fontSize: '0.8rem' }}>▼</span>
+                      </div>
+                    </div>
+
+                    {isOpen && (
+                      <div className="mt-6 pt-6" style={{ borderTop: '1px solid var(--border)' }} onClick={e => e.stopPropagation()}>
+                        {hr.length > 0 && renderQuestions('💼 HR / Behavioral Questions', hr)}
+                        {role.length > 0 && renderQuestions('🎯 Role-Specific Questions', role)}
+                        {salary.length > 0 && renderQuestions('💰 Salary & Negotiation', salary)}
+                        {sw.length > 0 && renderQuestions('🔄 Career Switch Questions', sw)}
+                        {np.length > 0 && renderQuestions('⏰ Notice Period Questions', np)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          ))}
+          ) : !showCreate ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">🎤</div>
+              <div className="empty-state-title">No Interview Preps</div>
+              <div className="empty-state-text">Generate role-specific interview questions to prepare for your next interview.</div>
+              <button className="btn btn-primary" onClick={() => setShowCreate(true)}>Start Preparing</button>
+            </div>
+          ) : null}
         </div>
-      ) : !showCreate ? (
-        <div className="empty-state">
-          <div className="empty-state-icon">🎤</div>
-          <div className="empty-state-title">No Interview Preps</div>
-          <div className="empty-state-text">Generate role-specific interview questions to prepare for your next interview.</div>
-          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>Start Preparing</button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
+      );
+    }

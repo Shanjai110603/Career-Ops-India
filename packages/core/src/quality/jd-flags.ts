@@ -29,21 +29,47 @@ export function analyzeJobQuality(job: {
   }
 
   // Scam indicators
-  const scamSignals = ['no investment required', 'earn from home', 'guaranteed income', 'registration fee', 'joining fee', 'security deposit', 'processing fee'];
+  const scamSignals = [
+    'no investment required', 'earn from home', 'guaranteed income', 
+    'registration fee', 'joining fee', 'security deposit', 'processing fee',
+    'laptop charges', 'non-refundable processing fee', 'laptop deposit',
+    'pay for training', 'registration charges', 'joining fee mandatory',
+    'processing charges', 'telegram channel', 'telegram link', 'whatsapp group link'
+  ];
   for (const signal of scamSignals) {
     if (desc.includes(signal)) {
-      flags.push({ type: 'danger', category: 'scam', message: `Potential scam indicator: "${signal}"`, confidence: 0.9 });
+      flags.push({ type: 'danger', category: 'scam', message: `Potential scam indicator: "${signal}"`, confidence: 0.95 });
     }
   }
 
-  // Consultancy spam
-  const consultancySignals = ['walk in', 'walk-in', 'walkin', 'urgent hiring', 'immediate joining', 'spot offer'];
+  // Fake job shapes (Indian WFH scams)
+  const fakeJobPatterns = [
+    /\b(?:data entry|copy paste|sms sending|captcha entry|form filling)\b/i,
+    /\b(?:part time home based|online form filling|typing work from home)\b/i
+  ];
+  for (const pattern of fakeJobPatterns) {
+    if (pattern.test(title) || pattern.test(desc)) {
+      flags.push({ type: 'danger', category: 'fake_job', message: 'Common WFH/Data Entry scam pattern detected', confidence: 0.95 });
+    }
+  }
+
+  // Consultancy checks (Company name matches or JD matches consultancy signals)
+  const consultancyCompanyPattern = /\b(?:consulting|staffing|placement|recruitment|solutions|hr solutions|consultancy|agency|talents|services|placements)\b/i;
+  const isConsultancyName = job.company && consultancyCompanyPattern.test(job.company.toLowerCase());
+
+  const consultancySignals = ['walk in', 'walk-in', 'walkin', 'urgent hiring', 'immediate joining', 'spot offer', 'bulk hiring', 'multiple openings'];
   let consultancyCount = 0;
   for (const signal of consultancySignals) {
     if (desc.includes(signal)) consultancyCount++;
   }
-  if (consultancyCount >= 2) {
-    flags.push({ type: 'warning', category: 'consultancy', message: 'Likely consultancy/staffing post', confidence: 0.7 });
+  
+  if (isConsultancyName || consultancyCount >= 2) {
+    flags.push({ 
+      type: 'warning', 
+      category: 'consultancy', 
+      message: isConsultancyName ? 'Company name indicates a consultancy/placement agency' : 'JD keywords suggest consultancy/placement post', 
+      confidence: 0.8 
+    });
   }
 
   // Unrealistic experience
@@ -58,7 +84,7 @@ export function analyzeJobQuality(job: {
   }
 
   // Exploitative conditions
-  const exploitSignals = ['6 day', '6-day', 'six day', 'no leave', 'unpaid', 'stipend only', 'night shift mandatory', 'rotational shift compulsory'];
+  const exploitSignals = ['6 day', '6-day', 'six day', 'no leave', 'unpaid', 'stipend only', 'night shift mandatory', 'rotational shift compulsory', 'work on weekends'];
   for (const signal of exploitSignals) {
     if (desc.includes(signal)) {
       flags.push({ type: 'warning', category: 'exploitative', message: `Potential concern: "${signal}"`, confidence: 0.6 });
@@ -66,7 +92,7 @@ export function analyzeJobQuality(job: {
   }
 
   // Bond/service agreement
-  const bondSignals = ['service agreement', 'bond', 'service bond', 'lock-in', 'minimum tenure mandatory'];
+  const bondSignals = ['service agreement', 'bond', 'service bond', 'lock-in', 'minimum tenure mandatory', 'sign a bond'];
   for (const signal of bondSignals) {
     if (desc.includes(signal)) {
       flags.push({ type: 'warning', category: 'bond', message: `Contains service bond/agreement clause`, confidence: 0.85 });

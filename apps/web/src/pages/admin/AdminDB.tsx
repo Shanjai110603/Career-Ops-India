@@ -12,7 +12,7 @@ export default function AdminDB() {
       const res = await fetch('/api/backup', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        setBackups(prev => [{ id: Date.now(), filename: data.filename, size: data.size, type: 'full', status: 'completed', created_at: new Date().toISOString() }, ...prev]);
+        setBackups(prev => [{ id: Date.now(), filename: data.filename, size: data.size, type: 'full', status: 'completed', createdAt: new Date().toISOString() }, ...prev]);
       }
     } catch {}
     setCreating(false);
@@ -54,7 +54,7 @@ export default function AdminDB() {
                     <td className="text-sm">{formatSize(b.size)}</td>
                     <td><span className="badge badge-neutral">{b.type}</span></td>
                     <td><span className="badge badge-success">{b.status}</span></td>
-                    <td className="text-xs text-muted">{b.created_at ? new Date(b.created_at).toLocaleString('en-IN') : ''}</td>
+                    <td className="text-xs text-muted">{b.createdAt ? new Date(b.createdAt).toLocaleString('en-IN') : ''}</td>
                   </tr>
                 ))}
               </tbody>

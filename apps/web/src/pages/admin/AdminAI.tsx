@@ -79,7 +79,7 @@ export default function AdminAI() {
                   <div className="stat-icon green"><span>🤖</span></div>
                   <div>
                     <h4 style={{ fontWeight: 600 }}>{p.name}</h4>
-                    <p className="text-muted text-xs">{p.type} · Model: {p.default_model || 'Not set'} · Key: {p.api_key || 'None'}</p>
+                    <p className="text-muted text-xs">{p.type} · Model: {p.defaultModel || 'Not set'} · Key: {p.apiKey || 'None'}</p>
                   </div>
                 </div>
                 <div className="flex gap-2">

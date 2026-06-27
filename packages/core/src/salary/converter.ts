@@ -141,3 +141,111 @@ export function isLowball(lpa: number, roleFamily: string, experienceYears: numb
 
   return lpa < bracket[0] * 0.7;
 }
+
+export interface DetailedSalaryBreakdown {
+  annualCTC: number;
+  basic: number;
+  hra: number;
+  employerPF: number;
+  gratuity: number;
+  specialAllowance: number;
+  annualGross: number;
+  professionalTax: number;
+  employeePF: number;
+  taxableIncome: number;
+  incomeTax: number;
+  educationCess: number;
+  totalTax: number;
+  monthlyGross: number;
+  monthlyDeductions: number;
+  monthlyNetTakeHome: number;
+}
+
+/** Calculate detailed take-home salary based on Indian New Tax Regime (FY 2024-25 / 2025-26) */
+export function calculateInHandSalary(lpa: number, isMetro: boolean = true): DetailedSalaryBreakdown {
+  const annualCTC = Math.round(lpa * 100000);
+  
+  // Basic is 40% of CTC
+  const basic = Math.round(annualCTC * 0.40);
+  
+  // HRA is 50% of Basic for Metro, 40% for non-metro
+  const hra = Math.round(basic * (isMetro ? 0.50 : 0.40));
+  
+  // Employer PF contribution: 12% of Basic, capped at ₹1,800/month (₹21,600/year)
+  const employerPF = Math.min(Math.round(basic * 0.12), 21600);
+  
+  // Gratuity: 4.81% of Basic
+  const gratuity = Math.round(basic * 0.0481);
+  
+  // Special Allowance: Balance CTC amount
+  const specialAllowance = Math.max(0, annualCTC - basic - hra - employerPF - gratuity);
+  
+  // Annual Gross: CTC excluding employer PF and Gratuity
+  const annualGross = annualCTC - employerPF - gratuity;
+  
+  // Professional Tax is ₹200/month (₹2,400/year)
+  const professionalTax = 2400;
+  
+  // Employee PF matches Employer PF
+  const employeePF = employerPF;
+  
+  // Taxable income calculation under New Tax Regime
+  const standardDeduction = 75000;
+  const taxableIncome = Math.max(0, annualGross - professionalTax - standardDeduction);
+  
+  // New Tax Regime Slabs
+  let incomeTax = 0;
+  let temp = taxableIncome;
+  if (temp > 1500000) {
+    incomeTax += (temp - 1500000) * 0.30;
+    temp = 1500000;
+  }
+  if (temp > 1200000) {
+    incomeTax += (temp - 1200000) * 0.20;
+    temp = 1200000;
+  }
+  if (temp > 900000) {
+    incomeTax += (temp - 900000) * 0.15;
+    temp = 900000;
+  }
+  if (temp > 600000) {
+    incomeTax += (temp - 600000) * 0.10;
+    temp = 600000;
+  }
+  if (temp > 300000) {
+    incomeTax += (temp - 300000) * 0.05;
+  }
+  
+  // Section 87A Tax Rebate for taxable income up to ₹7,00,000
+  if (taxableIncome <= 700000) {
+    incomeTax = 0;
+  }
+  
+  // Health & Education Cess is 4% of tax
+  const educationCess = incomeTax > 0 ? Math.round(incomeTax * 0.04) : 0;
+  const totalTax = incomeTax + educationCess;
+  
+  const monthlyGross = Math.round(annualGross / 12);
+  const monthlyDeductions = Math.round((employeePF + totalTax + professionalTax) / 12);
+  const monthlyNetTakeHome = monthlyGross - monthlyDeductions;
+  
+  return {
+    annualCTC,
+    basic,
+    hra,
+    employerPF,
+    gratuity,
+    specialAllowance,
+    annualGross,
+    professionalTax,
+    employeePF,
+    taxableIncome,
+    incomeTax: Math.round(incomeTax),
+    educationCess,
+    totalTax,
+    monthlyGross,
+    monthlyDeductions,
+    monthlyNetTakeHome,
+  };
+}
+
