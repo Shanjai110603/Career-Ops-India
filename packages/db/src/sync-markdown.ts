@@ -1,6 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
 import { getDb } from './index.js';
 import { jobs, applications } from './schema.js';
 import { eq, and } from 'drizzle-orm';

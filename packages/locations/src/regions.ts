@@ -2,8 +2,7 @@
  * Career-Ops India — Region & Proximity Utilities
  * ========================================================================= */
 
-import { type Region, STATES, findStateByName } from './states.js';
-import { type City, CITIES, findCity } from './cities.js';
+import { type City, findCity } from './cities.js';
 
 export interface RegionGroup {
   id: string;

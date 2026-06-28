@@ -11,6 +11,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
