@@ -61,8 +61,9 @@ Career-Ops India is a complete, self-hostable, production-grade job search, resu
 
 ```
 career-ops-india/
-├── apps/
-│   ├── web/           # React + Vite frontend + Hono API backend
+│   ├── web/           # React + Vite frontend & Hono API backend
+│   │   ├── src/       # React client code
+│   │   └── server/    # Modular Hono backend (index.ts entrypoint, helpers, and routes/*)
 │   └── site/          # Public website (planned)
 ├── packages/
 │   ├── ai/            # AI provider adapters (OpenAI, Gemini, etc.)
